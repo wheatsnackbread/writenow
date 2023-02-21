@@ -38,7 +38,7 @@ class AudioProcessingStatus(Enum):
 
 
 # Use a service account.
-cred = credentials.Certificate(r'./whispertranscribe-nuxt.key.json')
+cred = credentials.Certificate(r'./whispertranscribe-admin.key.json')
 app = firebase_admin.initialize_app(cred)
 db : firestore._FirestoreClient = firestore.client()
 # Create an Event for notifying main thread.
