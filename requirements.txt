@@ -9,3 +9,4 @@ ffmpeg-python
 google-api-python-client
 grpcio
 firebase-admin
+protofbuf3
