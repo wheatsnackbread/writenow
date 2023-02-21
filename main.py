@@ -48,6 +48,7 @@ class Notebook:
     id: str
     title: str
     audio_path: str
+    audio_url: Optional[str]
     user_id: str
 
     transcript_status: AudioProcessingStatus
@@ -63,35 +64,58 @@ class Notebook:
     summary_processing_completed_at: Optional[Timestamp];
 
 
+model = whisper.load_model("base.en")
+
 def triggerTranscribe(document: firestore.firestore.DocumentSnapshot):
-    print(document.__dict__)
     notebookData : Notebook = document.__dict__['_data'];
-    print(notebookData)
+    transcript_status = None
+    try:
+        transcript_status = notebookData['transcript_status'];
+    except Exception as e:
+        print(f"Transcript Status not found on document {document.id}. Skipping.")
+        return
+    if(transcript_status != 'QUEUED'):
+        print(f"Transcript Status not QUEUED on document {document.id}. Skipping.")
+        return
+
+    print(f'Starting transcription on : {document.id}.')
     try:
         #extract values and transcribe
-        print(u'New ADDED entry detected: {}'.format(document.id))
         mod = document._reference
-        mod.update({u'status': "PROCESSING"})
+        start_time = Timestamp()
+        start_time.GetCurrentTime()
+        mod.update({u'status': "PROCESSING", "transcript_processing_started_at": start_time.ToDatetime()})
 
-        start_time = time.time()
-        model = whisper.load_model("base.en")
-        print("Starting to process video.\n")
-        result = model.transcribe(notebookData['audio_path'])
+        audio_url = notebookData['audio_url']
+        if(audio_url == None):
+            raise Exception("Audio URL not found")
+        print(f"Starting to process video. {audio_url} \n")
+        result = model.transcribe(notebookData['audio_url'])
         print("Processing complete.")
-        print("\nCompleted in ---%s seconds" % (time.time() - start_time))
-        transcript = result['text'] #os.environ.get("NAME", "World")
-        print(transcript)
-        mod.update({u'transcript': transcript})
 
-        #TO-DO: multithreading and deleting file
-        print('**************great success*********')
-        mod.update({u'transcript_status': "COMPLETE\n\n"})
+        end_time = Timestamp()
+        end_time.GetCurrentTime()
+        print("\nCompleted in ---%s seconds" % (end_time.ToSeconds() - start_time.ToSeconds()))
+        transcript = result['text'] #os.environ.get("NAME", "World")
+        # Print first 100 characters of transcript with ... appended
+        print(transcript[:100] + "...\n")
+        mod.update({u'transcript': transcript, 'transcript_processing_completed_at': end_time.ToDatetime(), 'transcript_status': 'COMPLETE'})
+        print(f"Transcription complete on Document: {document.id}\n")
+
     except Exception as e:
-        print(f"Processing Error on Document: {document.id}\n")
+        print(f"Processing Error on Document: {document.id}:")
+        print(e);
+        print("\n\n")
+
         try:
             mod.update({'transcript_status': 'ERROR', 'transcription_error': e.args})
-        except Exception as e:
-            print(f"Critical error. Processing impossible. {document.id} \n\n")
+            print(f"Document Updated with Error: {document.id}\n")
+        except Exception as e2:
+            print(f"CRITICAL ERROR: Updating Document Failed. {document.id}")
+            print(e2)
+            print("\n\n")
+    finally:
+        print(f"Transcription Finished on Document: {document.id}\n")
 
 
 
@@ -103,18 +127,7 @@ def on_snapshot(col_snapshot, changes, read_time):
 
     for change in changes:
         if(change.type.name == 'ADDED' or change.type.name == 'MODIFIED'):
-            try:
-                if(change.document.get('transcript_status') == 'QUEUED'):
-                    triggerTranscribe(change.document)
-            except Exception as e:
-                print("Transcription Error", e)
-                try: 
-                    change.document._reference.update({'transcript_status': 'ERROR', 'transcription_error': e.args})
-                except Exception as e:
-                    print("Fatal Error", e);
-                    exit()
-            finally: 
-                print("Transcription Finished on Document: ", change.document.id)
+            triggerTranscribe(change.document)
     callback_done.set()
         # Removed other cases
 
