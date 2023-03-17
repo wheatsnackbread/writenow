@@ -27,6 +27,8 @@ from firebase_admin import firestore
 import google.cloud.firestore_admin_v1.types.firestore_admin
 from enum import Enum
 from google.protobuf.timestamp_pb2 import Timestamp
+from urllib.parse import quote 
+from requests import get
 # class syntax
 
 class AudioProcessingStatus(Enum):
@@ -70,12 +72,13 @@ def triggerTranscribe(document: firestore.firestore.DocumentSnapshot):
     notebookData : Notebook = document.__dict__['_data'];
     transcript_status = None
     try:
-        transcript_status = notebookData['transcript_status'];
+        transcript_status = notebookData['transcript_response']['status']
+        print(transcript_status)
     except Exception as e:
         print(f"Transcript Status not found on document {document.id}. Skipping.")
         return
-    if(transcript_status != 'QUEUED'):
-        print(f"Transcript Status not QUEUED on document {document.id}. Skipping.")
+    if(transcript_status != 'IDLE'):
+        print(f"Transcript Status not IDLE on document {document.id}. Skipping.")
         return
 
     print(f'Starting transcription on : {document.id}.')
@@ -84,14 +87,52 @@ def triggerTranscribe(document: firestore.firestore.DocumentSnapshot):
         mod = document._reference
         start_time = Timestamp()
         start_time.GetCurrentTime()
-        mod.update({u'status': "PROCESSING", "transcript_processing_started_at": start_time.ToDatetime()})
+        mod.update({u'transcript_response.status': "PROCESSING", "transcript_response.timestamp.started_at": start_time.ToDatetime()})
 
-        audio_url = notebookData['audio_url']
+        print("A")
+
+        #audio_url = urllib.quote(r'https://firebasestorage.googleapis.com/v0/b/whispertranscribe.appspot.com/o/' + notebookData['audio_path'])
+        # WRONG !
+
+        audio_url = r'https://firebasestorage.googleapis.com/v0/b/whispertranscribe.appspot.com/o/' + quote(str(notebookData['audio_path']).encode('utf8'), safe=r'\':()') + '?alt=media'
+
+        print('AUDIO_URL:    ' + audio_url)
+
+        print("B")
+
+        #audio_url = r'https://firebasestorage.googleapis.com/v0/b/whispertranscribe.appspot.com/o/' + quote((r"notebook_audio/4W4qs99_SpAqMEU086xp4/onlymp3.to - The NY Subway's Weirdly Successful Lost and Found System-dwAxPVlKwoQ-256k-1654739305338 (1).mp3").encode('utf8'),  safe=r'\':()') + '?alt=media'
+
+
         if(audio_url == None):
+            print("Audio URL not found")
             raise Exception("Audio URL not found")
+        
+        print("C")
+            
         print(f"Starting to process video. {audio_url} \n")
-        result = model.transcribe(notebookData['audio_url'])
+
+        time.sleep(5) #gotta wait or it tries to process before it is fully uploaded, or else u get a stinky 404
+
+        upload_status = 0
+
+        # lowkey stupid code but you gotta do what you gotta do when the Python SDK doesn't support on upload completion triggers
+        for i in range(6):
+            upload_status = get(audio_url).status_code
+            if upload_status == 200:
+                print("File successfully detected in Firestore.")
+                break
+            else:
+                print("File not completed uploaded or errored. Trying again in 20 seconds.")
+                time.sleep(20)
+
+        if upload_status != 200:
+            raise Exception("Audio file did not upload at all or took too long and timed out.")
+
+    
+        result = model.transcribe(audio_url)
         print("Processing complete.")
+
+        print("D")
 
         end_time = Timestamp()
         end_time.GetCurrentTime()
@@ -99,7 +140,14 @@ def triggerTranscribe(document: firestore.firestore.DocumentSnapshot):
         transcript = result['text'] #os.environ.get("NAME", "World")
         # Print first 100 characters of transcript with ... appended
         print(transcript[:100] + "...\n")
-        mod.update({u'transcript': transcript, 'transcript_processing_completed_at': end_time.ToDatetime(), 'transcript_status': 'COMPLETE'})
+
+        print("E")
+
+        mod.update({u'transcript_response.result.val.transcript': transcript,  'transcript_response.timestamp.completed_at': end_time.ToDatetime(), 'transcript_response.status': 'SUCCESS', 'transcript_response.result.status': 'SUCCESS'})
+                   
+        time.sleep(2)
+
+        mod.update({'summary_response.status': 'QUEUED'}) #QUEUED after a couple seconds to begin the summarization process
         print(f"Transcription complete on Document: {document.id}\n")
 
     except Exception as e:
@@ -108,7 +156,7 @@ def triggerTranscribe(document: firestore.firestore.DocumentSnapshot):
         print("\n\n")
 
         try:
-            mod.update({'transcript_status': 'ERROR', 'transcription_error': e.args})
+            mod.update({'transcript_response.status': 'ERROR', 'transcription_error': e.args})
             print(f"Document Updated with Error: {document.id}\n")
         except Exception as e2:
             print(f"CRITICAL ERROR: Updating Document Failed. {document.id}")
